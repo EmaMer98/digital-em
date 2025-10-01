@@ -1,0 +1,536 @@
+import React, { useMemo, useState, useEffect } from "react";
+
+/**
+ * Frontend MVP – Segreteria Digitale / Organizer Cloud (single-file)
+ * v0.2 – aggiunta To‑Do con stati "aperto/archiviato" e vista Archivio
+ * - TailwindCSS for styling (no imports needed)
+ * - No external UI libs (self-contained)
+ * - Mock data + local state to simulate flows
+ */
+
+// --- Mock data --------------------------------------------------------------
+const USERS = [
+  { id: "u1", name: "Alice Bianchi" },
+  { id: "u2", name: "Luca Verdi" },
+  { id: "u3", name: "Sara Neri" },
+];
+
+const initialTickets = [
+  { id: "TCK-101", title: "Setup nuovo laptop", assignee: "u1", priority: "High", status: "Open", createdAt: "2025-09-25", tags: ["asset", "onboarding"] },
+  { id: "TCK-102", title: "VPN intermittente", assignee: "u2", priority: "Medium", status: "In Progress", createdAt: "2025-09-28", tags: ["network"] },
+  { id: "TCK-103", title: "Calendario team non si sincronizza", assignee: "u1", priority: "High", status: "Open", createdAt: "2025-09-30", tags: ["calendar"] },
+  { id: "TCK-104", title: "Aggiornare certificati SSL", assignee: "u3", priority: "Low", status: "Resolved", createdAt: "2025-09-20", tags: ["security"] },
+];
+
+const initialEvents = [
+  { id: "E1", title: "Daily Standup", start: "2025-10-01T09:30:00", end: "2025-10-01T09:45:00", location: "Meet" },
+  { id: "E2", title: "Allineamento progetto ACME", start: "2025-10-01T11:00:00", end: "2025-10-01T12:00:00", location: "Room 2" },
+  { id: "E3", title: "On-call handoff", start: "2025-10-01T17:30:00", end: "2025-10-01T18:00:00", location: "Meet" },
+];
+
+const initialTimesheets = [
+  { id: "TS1", user: "u1", project: "ACME rollout", date: "2025-09-30", hours: 3.5, notes: "Ticket #102 + meeting" },
+  { id: "TS2", user: "u1", project: "Intranet", date: "2025-09-29", hours: 2, notes: "Bugfix auth" },
+];
+
+// --- Utilities --------------------------------------------------------------
+const classNames = (...c) => c.filter(Boolean).join(" ");
+
+function formatTimeRange(isoStart, isoEnd) {
+  const s = new Date(isoStart);
+  const e = new Date(isoEnd);
+  const fmt = (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return `${fmt(s)}–${fmt(e)}`;
+}
+
+function todayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// --- UI primitives ----------------------------------------------------------
+function KpiCard({ label, value, sub }) {
+  return (
+    <div className="rounded-2xl border bg-white shadow-sm p-4">
+      <div className="text-sm text-gray-500">{label}</div>
+      <div className="mt-1 text-2xl font-semibold">{value}</div>
+      {sub && <div className="mt-1 text-xs text-gray-400">{sub}</div>}
+    </div>
+  );
+}
+
+function Badge({ children, tone = "gray" }) {
+  const tones = {
+    gray: "bg-gray-100 text-gray-700",
+    green: "bg-green-100 text-green-700",
+    yellow: "bg-yellow-100 text-yellow-800",
+    red: "bg-red-100 text-red-700",
+    blue: "bg-blue-100 text-blue-700",
+    purple: "bg-purple-100 text-purple-700",
+  };
+  return (
+    <span className={classNames("px-2 py-0.5 rounded-full text-xs font-medium", tones[tone])}>{children}</span>
+  );
+}
+
+function Modal({ title, open, onClose, children, footer }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="text-lg font-semibold">{title}</h3>
+          <button className="rounded-lg p-1 hover:bg-gray-100" onClick={onClose} aria-label="Chiudi">✕</button>
+        </div>
+        <div className="p-4">{children}</div>
+        {footer && <div className="p-4 border-t bg-gray-50 rounded-b-2xl">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+// --- Layout sections --------------------------------------------------------
+function Sidebar({ current, onNavigate }) {
+  const items = [
+    { key: "dashboard", label: "Dashboard" },
+    { key: "calendar", label: "Calendario" },
+    { key: "tickets", label: "Ticket" },
+    { key: "timesheet", label: "Timesheet" },
+    { key: "assets", label: "Asset" },
+    { key: "docs", label: "Documenti" },
+    { key: "archivio", label: "Archivio" },
+    { key: "admin", label: "Admin" },
+  ];
+  return (
+    <aside className="hidden md:flex md:flex-col md:w-64 md:shrink-0 border-r bg-white">
+      <div className="h-16 flex items-center px-4 text-xl font-bold">Segreteria Cloud</div>
+      <nav className="flex-1 px-2 space-y-1">
+        {items.map((it) => (
+          <button
+            key={it.key}
+            className={classNames(
+              "w-full text-left px-3 py-2 rounded-xl",
+              current === it.key ? "bg-gray-900 text-white" : "hover:bg-gray-100"
+            )}
+            onClick={() => onNavigate(it.key)}
+          >
+            {it.label}
+          </button>
+        ))}
+      </nav>
+      <div className="p-3 text-xs text-gray-500">v0.2 • Demo locale</div>
+    </aside>
+  );
+}
+
+function Topbar({ onNewTicket, onNewEvent }) {
+  return (
+    <div className="h-16 border-b bg-white flex items-center px-4 gap-2">
+      <input className="w-full md:max-w-md rounded-xl border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-gray-300" placeholder="Cerca ticket, eventi, documenti…" />
+      <div className="ml-auto flex items-center gap-2">
+        <button onClick={onNewEvent} className="rounded-xl bg-gray-900 text-white px-3 py-2 hover:opacity-90">Nuovo evento</button>
+        <button onClick={onNewTicket} className="rounded-xl border px-3 py-2 hover:bg-gray-100">Nuovo ticket</button>
+      </div>
+    </div>
+  );
+}
+
+// --- Feature: Dashboard -----------------------------------------------------
+function AgendaList({ events }) {
+  if (!events.length) return <div className="text-sm text-gray-500">Nessun evento per oggi.</div>;
+  return (
+    <ul className="space-y-2">
+      {events.map(ev => (
+        <li key={ev.id} className="flex items-center justify-between rounded-xl border p-3">
+          <div>
+            <div className="font-medium">{ev.title}</div>
+            <div className="text-sm text-gray-500">{formatTimeRange(ev.start, ev.end)} • {ev.location}</div>
+          </div>
+          <Badge tone="blue">Calendario</Badge>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TicketsTable({ tickets, compact = false }) {
+  const prioTone = (p) => (p === "High" ? "red" : p === "Medium" ? "yellow" : "gray");
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="text-left text-gray-500">
+            <th className="py-2 pr-4">ID</th>
+            <th className="py-2 pr-4">Titolo</th>
+            <th className="py-2 pr-4">Assegnato</th>
+            <th className="py-2 pr-4">Priorità</th>
+            <th className="py-2 pr-4">Stato</th>
+            {!compact && <th className="py-2 pr-4">Creato</th>}
+            <th className="py-2 pr-4">Tag</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tickets.map(t => (
+            <tr key={t.id} className="border-t">
+              <td className="py-2 pr-4 font-mono">{t.id}</td>
+              <td className="py-2 pr-4">{t.title}</td>
+              <td className="py-2 pr-4">{USERS.find(u => u.id === t.assignee)?.name ?? "—"}</td>
+              <td className="py-2 pr-4"><Badge tone={prioTone(t.priority)}>{t.priority}</Badge></td>
+              <td className="py-2 pr-4">{t.status}</td>
+              {!compact && <td className="py-2 pr-4">{new Date(t.createdAt).toLocaleDateString()}</td>}
+              <td className="py-2 pr-4 space-x-1">
+                {t.tags?.map((tag) => (
+                  <Badge key={tag}>{tag}</Badge>
+                ))}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// --- Feature: Timesheet -----------------------------------------------------
+function TimesheetForm() {
+  const [project, setProject] = useState("");
+  const [hours, setHours] = useState("");
+  const [notes, setNotes] = useState("");
+  const [rows, setRows] = useState(initialTimesheets);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!project || !hours) return;
+    const h = parseFloat(hours);
+    if (Number.isNaN(h) || h <= 0) return;
+    setRows((r) => [
+      ...r,
+      { id: `TS${r.length + 1}`, user: "u1", project, date: todayISO(), hours: h, notes }
+    ]);
+    setProject(""); setHours(""); setNotes("");
+  };
+
+  const totalToday = useMemo(() => rows.filter(r => r.date === todayISO()).reduce((a, r) => a + r.hours, 0), [rows]);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <form onSubmit={submit} className="col-span-1 space-y-3">
+        <input className="w-full rounded-xl border px-3 py-2" placeholder="Progetto" value={project} onChange={e => setProject(e.target.value)} />
+        <input className="w-full rounded-xl border px-3 py-2" placeholder="Ore (es. 1.5)" value={hours} onChange={e => setHours(e.target.value)} />
+        <textarea className="w-full rounded-xl border px-3 py-2" placeholder="Note" value={notes} onChange={e => setNotes(e.target.value)} />
+        <button className="rounded-xl bg-gray-900 text-white px-3 py-2 hover:opacity-90" type="submit">Registra</button>
+      </form>
+      <div className="lg:col-span-2">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="font-semibold">Registrazioni recenti</h4>
+          <div className="text-sm text-gray-500">Oggi: <strong>{totalToday.toFixed(1)} h</strong></div>
+        </div>
+        <div className="rounded-2xl border overflow-hidden">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500">
+                <th className="py-2 px-3">Data</th>
+                <th className="py-2 px-3">Progetto</th>
+                <th className="py-2 px-3">Ore</th>
+                <th className="py-2 px-3">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice().reverse().map((r) => (
+                <tr key={r.id} className="border-t">
+                  <td className="py-2 px-3">{new Date(r.date).toLocaleDateString()}</td>
+                  <td className="py-2 px-3">{r.project}</td>
+                  <td className="py-2 px-3">{r.hours}</td>
+                  <td className="py-2 px-3">{r.notes}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- Feature: To‑Do & Archivio ---------------------------------------------
+function TodoSection({ todos, onAdd, onToggleArchive }) {
+  const [text, setText] = useState("");
+  const add = (e) => {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t) return;
+    onAdd(t);
+    setText("");
+  };
+  return (
+    <div>
+      <form onSubmit={add} className="flex gap-2 mb-3">
+        <input className="flex-1 rounded-xl border px-3 py-2" placeholder="Aggiungi attività…" value={text} onChange={e => setText(e.target.value)} />
+        <button className="rounded-xl bg-gray-900 text-white px-3 py-2">Aggiungi</button>
+      </form>
+      {todos.length === 0 ? (
+        <div className="text-sm text-gray-500">Nessuna attività aperta.</div>
+      ) : (
+        <ul className="space-y-2">
+          {todos.map(td => (
+            <li key={td.id} className="flex items-center justify-between rounded-xl border p-3">
+              <div className="flex items-center gap-2">
+                <input type="checkbox" aria-label="Archivia" checked={false} onChange={() => onToggleArchive(td.id, true)} />
+                <span>{td.text}</span>
+              </div>
+              <Badge tone="green">aperto</Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ArchiveView({ items, onRestore }) {
+  return (
+    <div className="p-4 space-y-4">
+      <h2 className="text-xl font-semibold">Archivio attività</h2>
+      <div className="rounded-2xl border bg-white p-4">
+        {items.length === 0 ? (
+          <div className="text-sm text-gray-500">Nessuna attività archiviata.</div>
+        ) : (
+          <ul className="space-y-2">
+            {items.map(td => (
+              <li key={td.id} className="flex items-center justify-between rounded-xl border p-3">
+                <div className="flex items-center gap-2">
+                  <span className="line-through text-gray-500">{td.text}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge>archiviato</Badge>
+                  <button className="rounded-xl border px-2 py-1 text-sm hover:bg-gray-100" onClick={() => onRestore(td.id)}>Ripristina</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Dashboard container ----------------------------------------------------
+function Dashboard({ tickets, events, timesheets, todos, onAddTodo, onToggleArchive }) {
+  const openCount = tickets.filter(t => t.status !== "Resolved").length;
+  const today = todayISO();
+  const todayEvents = events.filter(e => e.start.startsWith(today));
+  const myHours = timesheets.reduce((acc, t) => acc + t.hours, 0);
+  const openTodos = todos.filter(t => !t.archived);
+
+  return (
+    <div className="p-4 space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Ticket aperti" value={openCount} sub="tutti gli stati tranne Resolved" />
+        <KpiCard label="Eventi oggi" value={todayEvents.length} sub={new Date().toLocaleDateString()} />
+        <KpiCard label="Ore settimana (demo)" value={`${myHours.toFixed(1)} h`} sub="somma timesheet mock" />
+        <KpiCard label="To‑do aperti" value={openTodos.length} sub="non archiviati" />
+      </div>
+
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="rounded-2xl border bg-white p-4 lg:col-span-2">
+          <h3 className="font-semibold mb-3">I miei ticket</h3>
+          <TicketsTable compact tickets={tickets.slice(0, 8)} />
+        </div>
+        <div className="rounded-2xl border bg-white p-4">
+          <h3 className="font-semibold mb-3">Agenda di oggi</h3>
+          <AgendaList events={todayEvents} />
+        </div>
+      </section>
+
+      <section className="rounded-2xl border bg-white p-4">
+        <h3 className="font-semibold mb-3">Attività (To‑do)</h3>
+        <TodoSection todos={openTodos} onAdd={onAddTodo} onToggleArchive={onToggleArchive} />
+        <div className="mt-2 text-xs text-gray-500">Gli elementi archiviati non compaiono qui; li trovi in <strong>Archivio</strong>.</div>
+      </section>
+
+      <section className="rounded-2xl border bg-white p-4">
+        <h3 className="font-semibold mb-3">Registra ore (Timesheet)</h3>
+        <TimesheetForm />
+      </section>
+    </div>
+  );
+}
+
+// --- Root App --------------------------------------------------------------
+export default function App() {
+  const [view, setView] = useState("dashboard");
+  const [tickets, setTickets] = useState(initialTickets);
+  const [events, setEvents] = useState(initialEvents);
+  const [newTicketOpen, setNewTicketOpen] = useState(false);
+  const [newEventOpen, setNewEventOpen] = useState(false);
+  const [todos, setTodos] = useState([
+    { id: "TD1", text: "Preparare report SLA settembre", archived: false },
+    { id: "TD2", text: "Aggiornare runbook on-call", archived: false },
+    { id: "TD3", text: "Verifica rinnovo licenze antivirus", archived: true },
+  ]);
+
+  // Simple KPIs derived from state
+  const resolvedPct = Math.round((tickets.filter(t => t.status === "Resolved").length / tickets.length) * 100);
+
+  // Ticket creation
+  const [tTitle, setTTitle] = useState("");
+  const [tPriority, setTPriority] = useState("Medium");
+  const [tAssignee, setTAssignee] = useState("u1");
+
+  const createTicket = (e) => {
+    e.preventDefault();
+    if (!tTitle) return;
+    const id = `TCK-${100 + tickets.length + 1}`;
+    setTickets([{ id, title: tTitle, assignee: tAssignee, priority: tPriority, status: "Open", createdAt: todayISO(), tags: ["new"] }, ...tickets]);
+    setNewTicketOpen(false); setTTitle("");
+  };
+
+  // Event creation
+  const [evTitle, setEvTitle] = useState("");
+  const [evStart, setEvStart] = useState("");
+  const [evEnd, setEvEnd] = useState("");
+  const [evLocation, setEvLocation] = useState("Meet");
+
+  const createEvent = (e) => {
+    e.preventDefault();
+    if (!evTitle || !evStart || !evEnd) return;
+    const id = `E${events.length + 1}`;
+    setEvents([...events, { id, title: evTitle, start: evStart, end: evEnd, location: evLocation }]);
+    setNewEventOpen(false); setEvTitle(""); setEvStart(""); setEvEnd("");
+  };
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--resolved", `${resolvedPct}%`);
+  }, [resolvedPct]);
+
+  // To‑Do handlers
+  const addTodo = (text) => setTodos((list) => [...list, { id: `TD${list.length + 1}`, text, archived: false }]);
+  const toggleArchive = (id, toArchived) => setTodos((list) => list.map(t => t.id === id ? { ...t, archived: toArchived } : t));
+  const restoreTodo = (id) => toggleArchive(id, false);
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <div className="flex">
+        <Sidebar current={view} onNavigate={setView} />
+        <main className="flex-1 flex flex-col">
+          <Topbar onNewTicket={() => setNewTicketOpen(true)} onNewEvent={() => setNewEventOpen(true)} />
+
+          {view === "dashboard" && (
+            <Dashboard tickets={tickets} events={events} timesheets={initialTimesheets} todos={todos} onAddTodo={addTodo} onToggleArchive={toggleArchive} />
+          )}
+
+          {view === "tickets" && (
+            <div className="p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-semibold">Ticket</h2>
+                <div className="text-sm text-gray-500">Risolti: <strong>{resolvedPct}%</strong></div>
+              </div>
+              <div className="rounded-2xl border bg-white p-4">
+                <TicketsTable tickets={tickets} />
+              </div>
+            </div>
+          )}
+
+          {view === "calendar" && (
+            <div className="p-4 space-y-4">
+              <h2 className="text-xl font-semibold">Calendario</h2>
+              <div className="rounded-2xl border bg-white p-4">
+                <AgendaList events={events.filter(e => e.start.startsWith(todayISO()))} />
+                <div className="mt-4 text-sm text-gray-500">(Demo: mostra solo oggi; aggiungi eventi con “Nuovo evento”.)</div>
+              </div>
+            </div>
+          )}
+
+          {view === "timesheet" && (
+            <div className="p-4">
+              <h2 className="text-xl font-semibold mb-4">Timesheet</h2>
+              <div className="rounded-2xl border bg-white p-4">
+                <TimesheetForm />
+              </div>
+            </div>
+          )}
+
+          {view === "assets" && (
+            <div className="p-4">
+              <h2 className="text-xl font-semibold mb-2">Asset IT</h2>
+              <div className="rounded-2xl border bg-white p-8 text-sm text-gray-500">Placeholder: elenco dispositivi/licenze (da collegare all'API).</div>
+            </div>
+          )}
+
+          {view === "docs" && (
+            <div className="p-4">
+              <h2 className="text-xl font-semibold mb-2">Documenti</h2>
+              <div className="rounded-2xl border bg-white p-8 text-sm text-gray-500">Placeholder: repository documenti con ACL e versioni.</div>
+            </div>
+          )}
+
+          {view === "archivio" && (
+            <ArchiveView items={todos.filter(t => t.archived)} onRestore={restoreTodo} />
+          )}
+
+          {view === "admin" && (
+            <div className="p-4">
+              <h2 className="text-xl font-semibold mb-2">Admin</h2>
+              <div className="rounded-2xl border bg-white p-8 text-sm text-gray-500">Placeholder: gestione utenti/ruoli, audit log, integrazioni.</div>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* New Ticket Modal */}
+      <Modal title="Nuovo ticket" open={newTicketOpen} onClose={() => setNewTicketOpen(false)} footer={(
+        <div className="flex justify-end gap-2">
+          <button className="rounded-xl border px-3 py-2" onClick={() => setNewTicketOpen(false)}>Annulla</button>
+          <button form="ticket-form" className="rounded-xl bg-gray-900 text-white px-3 py-2">Crea</button>
+        </div>
+      )}>
+        <form id="ticket-form" onSubmit={createTicket} className="space-y-3">
+          <input className="w-full rounded-xl border px-3 py-2" placeholder="Titolo" value={tTitle} onChange={e => setTTitle(e.target.value)} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm text-gray-500">Priorità</label>
+              <select className="w-full rounded-xl border px-3 py-2" value={tPriority} onChange={e => setTPriority(e.target.value)}>
+                <option>High</option>
+                <option>Medium</option>
+                <option>Low</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm text-gray-500">Assegnatario</label>
+              <select className="w-full rounded-xl border px-3 py-2" value={tAssignee} onChange={e => setTAssignee(e.target.value)}>
+                {USERS.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* New Event Modal */}
+      <Modal title="Nuovo evento" open={newEventOpen} onClose={() => setNewEventOpen(false)} footer={(
+        <div className="flex justify-end gap-2">
+          <button className="rounded-xl border px-3 py-2" onClick={() => setNewEventOpen(false)}>Annulla</button>
+          <button form="event-form" className="rounded-xl bg-gray-900 text-white px-3 py-2">Crea</button>
+        </div>
+      )}>
+        <form id="event-form" onSubmit={createEvent} className="space-y-3">
+          <input className="w-full rounded-xl border px-3 py-2" placeholder="Titolo" value={evTitle} onChange={e => setEvTitle(e.target.value)} />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm text-gray-500">Inizio</label>
+              <input type="datetime-local" className="w-full rounded-xl border px-3 py-2" value={evStart} onChange={e => setEvStart(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-sm text-gray-500">Fine</label>
+              <input type="datetime-local" className="w-full rounded-xl border px-3 py-2" value={evEnd} onChange={e => setEvEnd(e.target.value)} />
+            </div>
+          </div>
+          <input className="w-full rounded-xl border px-3 py-2" placeholder="Luogo" value={evLocation} onChange={e => setEvLocation(e.target.value)} />
+        </form>
+      </Modal>
+    </div>
+  );
+}
